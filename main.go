@@ -39,7 +39,7 @@ https://github.com/XIU2/CloudflareSpeedTest
         下载测速时间；单个 IP 下载测速最长时间，不能太短；(默认 10 秒)
     -tp 443
         指定测速端口；延迟测速/下载测速时使用的端口；(默认 443 端口)
-    -url https://speed.cloudflare.com/__down?bytes=104857600
+    -url https://speed.cloudflare.com/__down?bytes=524288000
         下载测速地址；该地址超过 10MB 时必须带 Referer，默认地址不保证可用性，建议自建；
     -referer https://speed.cloudflare.com
         下载测速请求的 Referer；该地址超过 10MB 时必须带，空字符串=不发送；
@@ -106,7 +106,7 @@ https://github.com/XIU2/CloudflareSpeedTest
 	flag.IntVar(&task.TestCount, "dn", 10, "下载测速数量")
 	flag.IntVar(&downloadTime, "dt", 10, "下载测速时间")
 	flag.IntVar(&task.TCPPort, "tp", 443, "指定测速端口")
-	flag.StringVar(&task.URL, "url", "https://speed.cloudflare.com/__down?bytes=104857600", "下载测速地址")
+	flag.StringVar(&task.URL, "url", "https://speed.cloudflare.com/__down?bytes=524288000", "下载测速地址")
 	flag.StringVar(&task.Referer, "referer", "https://speed.cloudflare.com", "下载测速请求的 Referer；该地址超过 10MB 时必须带，空字符串=不发送")
 
 	flag.BoolVar(&task.Httping, "httping", false, "切换测速模式")

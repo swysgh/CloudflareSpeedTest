@@ -17,7 +17,7 @@ import (
 
 const (
 	bufferSize                     = 1024
-	defaultURL                     = "https://speed.cloudflare.com/__down?bytes=104857600"
+	defaultURL                     = "https://speed.cloudflare.com/__down?bytes=524288000"
 	defaultReferer                 = "https://speed.cloudflare.com"
 	defaultTimeout                 = 10 * time.Second
 	defaultDisableDownload         = false

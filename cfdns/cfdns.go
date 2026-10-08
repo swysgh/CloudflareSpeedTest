@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"time"
 
@@ -18,6 +19,13 @@ import (
 
 // APIBase 独立成包级变量是为了让单元测试能把请求打到本地 httptest.Server，而不是真实的 Cloudflare API
 var APIBase = "https://api.cloudflare.com/client/v4"
+
+// init 允许用环境变量覆盖 API 地址：测试时指向本地打桩服务，也可以指向兼容 Cloudflare API 的自建端点
+func init() {
+	if base := os.Getenv("CF_API_BASE"); base != "" {
+		APIBase = base
+	}
+}
 
 // httpClient 全局复用同一个连接池，避免每次更新重复建连
 var httpClient = &http.Client{Timeout: 15 * time.Second}

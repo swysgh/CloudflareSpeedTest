@@ -35,13 +35,17 @@ https://github.com/XIU2/CloudflareSpeedTest
         下载测速时间；单个 IP 下载测速最长时间，不能太短；(默认 10 秒)
     -tp 443
         指定测速端口；延迟测速/下载测速时使用的端口；(默认 443 端口)
-    -url https://cf.xiu2.xyz/url
-        指定测速地址；延迟测速(HTTPing)/下载测速时使用的地址，默认地址不保证可用性，建议自建；
+    -url https://speed.cloudflare.com/__down?bytes=104857600
+        下载测速地址；该地址超过 10MB 时必须带 Referer，默认地址不保证可用性，建议自建；
+    -referer https://speed.cloudflare.com
+        下载测速请求的 Referer；该地址超过 10MB 时必须带，空字符串=不发送；
 
     -httping
-        切换测速模式；延迟测速模式改为 HTTP 协议，所用测试地址为 [-url] 参数；(默认 TCPing)
+        切换测速模式；延迟测速模式改为 HTTP 协议，所用测试地址为 [-httping-url] 参数；(默认 TCPing)
+    -httping-url https://cp.cloudflare.com/
+        HTTPing 延迟测速地址；为空时回退到 [-url] 参数；
     -httping-code 200
-        有效状态代码；HTTPing 延迟测速时网页返回的有效 HTTP 状态码，仅限一个；(默认 200 301 302)
+        有效状态代码；HTTPing 延迟测速时网页返回的有效 HTTP 状态码，仅限一个；(默认 200 204 301 302)
     -cfcolo HKG,KHH,NRT,LAX,SEA,SJC,FRA,MAD
         匹配指定地区；IATA 机场地区码或国家/城市码，英文逗号分隔，仅 HTTPing 模式可用；(默认 所有地区)
 
@@ -83,9 +87,11 @@ https://github.com/XIU2/CloudflareSpeedTest
 	flag.IntVar(&task.TestCount, "dn", 10, "下载测速数量")
 	flag.IntVar(&downloadTime, "dt", 10, "下载测速时间")
 	flag.IntVar(&task.TCPPort, "tp", 443, "指定测速端口")
-	flag.StringVar(&task.URL, "url", "https://cf.xiu2.xyz/url", "指定测速地址")
+	flag.StringVar(&task.URL, "url", "https://speed.cloudflare.com/__down?bytes=104857600", "下载测速地址")
+	flag.StringVar(&task.Referer, "referer", "https://speed.cloudflare.com", "下载测速请求的 Referer；该地址超过 10MB 时必须带，空字符串=不发送")
 
 	flag.BoolVar(&task.Httping, "httping", false, "切换测速模式")
+	flag.StringVar(&task.HttpingURL, "httping-url", "https://cp.cloudflare.com/", "HTTPing 延迟测速地址；为空时回退到 -url")
 	flag.IntVar(&task.HttpingStatusCode, "httping-code", 0, "有效状态代码")
 	flag.StringVar(&task.HttpingCFColo, "cfcolo", "", "匹配指定地区")
 

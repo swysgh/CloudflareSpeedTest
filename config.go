@@ -2,11 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/XIU2/CloudflareSpeedTest/cfdns"
 	"github.com/XIU2/CloudflareSpeedTest/task"
@@ -27,6 +31,15 @@ var cfOpts cfOptions
 
 // configPath 是 -config 指定的 JSON 配置文件路径
 var configPath string
+
+// dnsServer 是 -dns 的原始取值（命令行或配置文件合并后的结果）
+var dnsServer string
+
+// resolver 是归一化后的解析器，只用于本工具自身发起的请求；nil 表示走系统默认解析器
+var resolver *net.Resolver
+
+// resolverAddr 是归一化后的拨号地址（host:port），仅在 resolver 非 nil 时有意义，用于打印生效配置
+var resolverAddr string
 
 // fileConfig 是 -config 指向的 JSON 配置文件结构，所有字段都可选。
 // 字段一律用指针：只有指针才能区分「没写」与「显式写了零值」，而 flag 优先级判断正依赖这个区分。
@@ -53,6 +66,7 @@ type fileConfig struct {
 	DisableDownload *bool    `json:"disable_download"`
 	TestAll         *bool    `json:"test_all"`
 	Debug           *bool    `json:"debug"`
+	DNS             *string  `json:"dns"`
 	Cloudflare      *struct {
 		Zone    *string `json:"zone"`
 		Record  *string `json:"record"`
@@ -155,6 +169,9 @@ func applyConfigFile(path string) {
 	if !set["debug"] && fc.Debug != nil {
 		utils.Debug = *fc.Debug
 	}
+	if !set["dns"] && fc.DNS != nil {
+		dnsServer = *fc.DNS
+	}
 
 	if fc.Cloudflare != nil {
 		if !set["cf-zone"] && fc.Cloudflare.Zone != nil {
@@ -178,8 +195,90 @@ func applyConfigFile(path string) {
 	}
 }
 
+// normalizeDNSServer 把 -dns 的取值归一化成 host:port 形式的拨号地址；空值返回空串。
+// 必须在 net.SplitHostPort 之前先用 net.ParseIP 判断裸 IP —— 裸 IPv6 里的冒号会被误当成 host:port 分隔符。
+func normalizeDNSServer(spec string) (string, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", nil
+	}
+	// 裸 IP（含裸 IPv6）：没有端口，补默认 53
+	if net.ParseIP(spec) != nil {
+		return net.JoinHostPort(spec, "53"), nil
+	}
+	// 带方括号的 IPv6：[addr] 或 [addr]:port
+	if strings.HasPrefix(spec, "[") {
+		host, port := "", ""
+		if strings.HasSuffix(spec, "]") { // 省略端口
+			host, port = spec[1:len(spec)-1], "53"
+		} else {
+			h, p, err := net.SplitHostPort(spec)
+			if err != nil {
+				return "", fmt.Errorf("DNS 服务器格式不正确: %s", spec)
+			}
+			host, port = strings.Trim(h, "[]"), p
+		}
+		if net.ParseIP(host) == nil {
+			return "", fmt.Errorf("DNS 服务器格式不正确: %s", spec)
+		}
+		if err := checkDNSPort(port, spec); err != nil {
+			return "", err
+		}
+		return net.JoinHostPort(host, port), nil
+	}
+	// 其余必须是 host:port（IPv4）
+	host, port, err := net.SplitHostPort(spec)
+	if err != nil {
+		return "", fmt.Errorf("DNS 服务器格式不正确: %s", spec)
+	}
+	if net.ParseIP(host) == nil || strings.Contains(host, ":") {
+		return "", fmt.Errorf("DNS 服务器格式不正确: %s", spec)
+	}
+	if err := checkDNSPort(port, spec); err != nil {
+		return "", err
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
+// checkDNSPort 校验端口范围 1..65535，非法时给出带原始取值的中文原因
+func checkDNSPort(port, spec string) error {
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("DNS 服务器端口不合法: %s", spec)
+	}
+	return nil
+}
+
+// buildResolver 把 -dns 的取值解析成一个只用于本工具自身请求的解析器。
+// 为空时返回 nil，调用方据此走系统默认解析器。
+func buildResolver(spec string) (*net.Resolver, error) {
+	addr, err := normalizeDNSServer(spec)
+	if err != nil {
+		return nil, err
+	}
+	resolverAddr = addr
+	if addr == "" {
+		return nil, nil
+	}
+	// PreferGo 才能让 Dial 回调生效；拨号超时给 5 秒，比 Go 默认宽松但不会无限等
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			dialer := net.Dialer{Timeout: 5 * time.Second}
+			return dialer.DialContext(ctx, network, addr)
+		},
+	}, nil
+}
+
 // validateOptions 校验合并后的最终参数，非法时带中文原因非 0 退出
 func validateOptions() {
+	// 解析器与 Cloudflare 是否启用无关，先无条件构造/校验，非法立即退出
+	var err error
+	resolver, err = buildResolver(dnsServer)
+	if err != nil {
+		fatal("%v", err)
+	}
+
 	checkURL := func(name, value string) {
 		if value == "" {
 			return // 空值有各自的语义（例如 -referer 空 = 不发送、-httping-url 空 = 回退 -url）
@@ -303,6 +402,11 @@ func printEffectiveConfig() {
 	fmt.Printf("[配置] 下载测速: 数量 %d / 时间 %ds / 下限 %.2f MB/s\n", task.TestCount, downloadTime, task.MinSpeed)
 	fmt.Printf("[配置] 延迟条件: %d ~ %d ms, 丢包上限 %.2f\n", minDelay, maxDelay, maxLossRate)
 	fmt.Printf("[配置] 显示数量/输出文件: %d / %s\n", utils.PrintNum, utils.Output)
+	if resolver == nil {
+		fmt.Println("[配置] DNS 解析器: 系统默认")
+	} else {
+		fmt.Printf("[配置] DNS 解析器: %s（仅用于 Cloudflare API）\n", resolverAddr)
+	}
 	if cfEnabled() {
 		fmt.Printf("[配置] Cloudflare DNS: 启用 (zone=%s, record=%s, token=%s, count=%d, ttl=%d, proxied=%v)\n",
 			cfOpts.zone, cfOpts.record, maskToken(cfOpts.token), cfOpts.count, cfOpts.ttl, cfOpts.proxied)
@@ -330,12 +434,13 @@ func updateDNS(speedData utils.DownloadSpeedSet) {
 		return
 	}
 	result, err := cfdns.Update(cfdns.Config{
-		Zone:    cfOpts.zone,
-		Record:  cfOpts.record,
-		Token:   cfOpts.token,
-		TTL:     cfOpts.ttl,
-		Proxied: cfOpts.proxied,
-		Count:   cfOpts.count,
+		Zone:     cfOpts.zone,
+		Record:   cfOpts.record,
+		Token:    cfOpts.token,
+		TTL:      cfOpts.ttl,
+		Proxied:  cfOpts.proxied,
+		Count:    cfOpts.count,
+		Resolver: resolver,
 	}, ips)
 	if err != nil {
 		utils.Red.Printf("[错误] Cloudflare DNS 更新失败: %v\n", err)

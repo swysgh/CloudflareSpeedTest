@@ -32,12 +32,26 @@ var httpClient = &http.Client{Timeout: 15 * time.Second}
 
 // Config 一次 DNS 更新所需的全部参数
 type Config struct {
-	Zone    string // 根域名或 Zone ID
-	Record  string // 完整记录名，如 cf.example.com
-	Token   string
-	TTL     int
-	Proxied bool
-	Count   int // 同名同类型最多写几条
+	Zone     string // 根域名或 Zone ID
+	Record   string // 完整记录名，如 cf.example.com
+	Token    string
+	TTL      int
+	Proxied  bool
+	Count    int           // 同名同类型最多写几条
+	Resolver *net.Resolver // 为空时用系统默认解析器；仅用于 Cloudflare API 的域名解析
+}
+
+// clientFor 返回本次更新使用的 HTTP client；指定了 Resolver 时用它解析域名
+func clientFor(cfg Config) *http.Client {
+	if cfg.Resolver == nil {
+		return httpClient
+	}
+	return &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{Timeout: 15 * time.Second, Resolver: cfg.Resolver}).DialContext,
+		},
+	}
 }
 
 // Result 一次更新实际发生的动作汇总
@@ -86,7 +100,8 @@ func Update(cfg Config, ips []string) (Result, error) {
 	if len(ips) == 0 {
 		return result, errors.New("DNS 更新跳过：没有可用 IP")
 	}
-	zoneID, err := resolveZone(cfg)
+	client := clientFor(cfg)
+	zoneID, err := resolveZone(cfg, client)
 	if err != nil {
 		return result, err
 	}
@@ -94,14 +109,14 @@ func Update(cfg Config, ips []string) (Result, error) {
 	ipv4, ipv6 := splitByFamily(ips)
 	anySkipped := false
 	if len(ipv4) > 0 {
-		skipped, err := syncFamily(cfg, zoneID, "A", ipv4, &result)
+		skipped, err := syncFamily(cfg, client, zoneID, "A", ipv4, &result)
 		if err != nil {
 			return result, err
 		}
 		anySkipped = anySkipped || skipped
 	}
 	if len(ipv6) > 0 {
-		skipped, err := syncFamily(cfg, zoneID, "AAAA", ipv6, &result)
+		skipped, err := syncFamily(cfg, client, zoneID, "AAAA", ipv6, &result)
 		if err != nil {
 			return result, err
 		}
@@ -113,12 +128,12 @@ func Update(cfg Config, ips []string) (Result, error) {
 }
 
 // resolveZone 把根域名解析成 Zone ID；形如 32 位十六进制的值直接当 Zone ID 用，省一次 API 调用
-func resolveZone(cfg Config) (string, error) {
+func resolveZone(cfg Config, client *http.Client) (string, error) {
 	if isZoneID(cfg.Zone) {
 		return cfg.Zone, nil
 	}
 	var zones []cfZone
-	if err := apiRequest(http.MethodGet, "/zones?name="+url.QueryEscape(cfg.Zone), cfg.Token, nil, &zones); err != nil {
+	if err := apiRequest(client, http.MethodGet, "/zones?name="+url.QueryEscape(cfg.Zone), cfg.Token, nil, &zones); err != nil {
 		return "", err
 	}
 	if len(zones) == 0 {
@@ -129,7 +144,7 @@ func resolveZone(cfg Config) (string, error) {
 
 // syncFamily 把一个 IP 家族按速度序取前 Count 条，对齐同步到同一种类型的记录上，
 // 返回值表示该家族是否命中「已是最新」的幂等判断
-func syncFamily(cfg Config, zoneID, recordType string, familyIPs []string, result *Result) (bool, error) {
+func syncFamily(cfg Config, client *http.Client, zoneID, recordType string, familyIPs []string, result *Result) (bool, error) {
 	count := cfg.Count
 	if count < 1 {
 		count = 1
@@ -138,7 +153,7 @@ func syncFamily(cfg Config, zoneID, recordType string, familyIPs []string, resul
 	if len(targets) > count {
 		targets = targets[:count]
 	}
-	existing, err := listRecords(cfg, zoneID, recordType)
+	existing, err := listRecords(cfg, client, zoneID, recordType)
 	if err != nil {
 		return false, err
 	}
@@ -151,14 +166,14 @@ func syncFamily(cfg Config, zoneID, recordType string, familyIPs []string, resul
 	for i, ip := range targets {
 		body := dnsWriteBody{Type: recordType, Name: cfg.Record, Content: ip, TTL: cfg.TTL, Proxied: cfg.Proxied}
 		if i < len(existing) {
-			if err := apiRequest(http.MethodPut, "/zones/"+zoneID+"/dns_records/"+existing[i].ID, cfg.Token, body, nil); err != nil {
+			if err := apiRequest(client, http.MethodPut, "/zones/"+zoneID+"/dns_records/"+existing[i].ID, cfg.Token, body, nil); err != nil {
 				return false, err
 			}
 			result.Updated++
 			utils.Yellow.Printf("[信息] 更新 %s 记录: %s\n", recordType, ip)
 			continue
 		}
-		if err := apiRequest(http.MethodPost, "/zones/"+zoneID+"/dns_records", cfg.Token, body, nil); err != nil {
+		if err := apiRequest(client, http.MethodPost, "/zones/"+zoneID+"/dns_records", cfg.Token, body, nil); err != nil {
 			return false, err
 		}
 		result.Created++
@@ -167,7 +182,7 @@ func syncFamily(cfg Config, zoneID, recordType string, familyIPs []string, resul
 	// 目标数量少于既有数量时，多余的记录删除
 	if len(existing) > len(targets) {
 		for _, record := range existing[len(targets):] {
-			if err := apiRequest(http.MethodDelete, "/zones/"+zoneID+"/dns_records/"+record.ID, cfg.Token, nil, nil); err != nil {
+			if err := apiRequest(client, http.MethodDelete, "/zones/"+zoneID+"/dns_records/"+record.ID, cfg.Token, nil, nil); err != nil {
 				return false, err
 			}
 			result.Deleted++
@@ -177,17 +192,17 @@ func syncFamily(cfg Config, zoneID, recordType string, familyIPs []string, resul
 	return false, nil
 }
 
-func listRecords(cfg Config, zoneID, recordType string) ([]dnsRecord, error) {
+func listRecords(cfg Config, client *http.Client, zoneID, recordType string) ([]dnsRecord, error) {
 	var records []dnsRecord
 	listPath := fmt.Sprintf("/zones/%s/dns_records?type=%s&name=%s&per_page=100", zoneID, recordType, url.QueryEscape(cfg.Record))
-	if err := apiRequest(http.MethodGet, listPath, cfg.Token, nil, &records); err != nil {
+	if err := apiRequest(client, http.MethodGet, listPath, cfg.Token, nil, &records); err != nil {
 		return nil, err
 	}
 	return records, nil
 }
 
 // apiRequest 发起一次 Cloudflare API 请求；out 非 nil 时把 result 解析进去
-func apiRequest(method, apiPath, token string, body interface{}, out interface{}) error {
+func apiRequest(client *http.Client, method, apiPath, token string, body interface{}, out interface{}) error {
 	var payload io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -202,7 +217,7 @@ func apiRequest(method, apiPath, token string, body interface{}, out interface{}
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", "application/json")
-	response, err := httpClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}

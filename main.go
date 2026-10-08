@@ -71,6 +71,10 @@ https://github.com/XIU2/CloudflareSpeedTest
     -o result.csv
         写入结果文件；如路径含有空格请加上引号；值为空时不写入文件 [-o ""]；(默认 result.csv)
 
+    -dns 1.1.1.1
+        指定本工具自己解析域名用的 DNS 服务器；形如 1.1.1.1 或 1.1.1.1:53（也支持 [IPv6]:53）；为空=用系统解析器；
+        只影响本工具自身发起的域名解析（目前只有 Cloudflare API），测速阶段是直连 IP、不走 DNS；
+
     -config cfst.json
         JSON 配置文件路径；配置文件里没写的项走默认值，命令行显式给出的参数优先于配置文件；
 
@@ -129,6 +133,7 @@ https://github.com/XIU2/CloudflareSpeedTest
 
 	flag.BoolVar(&utils.Debug, "debug", false, "调试输出模式")
 
+	flag.StringVar(&dnsServer, "dns", "", "本工具自身解析域名用的 DNS 服务器；为空=系统解析器")
 	flag.StringVar(&configPath, "config", "", "JSON 配置文件路径；命令行显式给出的参数优先于配置文件")
 	flag.StringVar(&cfOpts.zone, "cf-zone", "", "Cloudflare Zone（根域名或 Zone ID）")
 	flag.StringVar(&cfOpts.record, "cf-record", "", "要更新的记录名（完整域名，如 cf.example.com）")

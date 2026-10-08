@@ -21,6 +21,151 @@
 > Cloudflare CDN 已**明文禁止代理**方式使用，对于**代理套 CDN** 的自行承担风险，请勿过度依赖 [#382](https://github.com/XIU2/CloudflareSpeedTest/discussions/382) [#383](https://github.com/XIU2/CloudflareSpeedTest/discussions/383)
 
 ****
+## \# 本分支（swysgh fork）的改动
+
+### 分支说明
+
+本仓库是 [XIU2/CloudflareSpeedTest](https://github.com/XIU2/CloudflareSpeedTest) 的个人分支（fork），上游仓库为 `XIU2/CloudflareSpeedTest`。本仓库已配置好指向上游的 `upstream` remote，同步上游的常用命令如下：
+
+```bash
+git fetch upstream && git merge upstream/master
+```
+
+### 与原版的差异
+
+下表逐条列出本分支与上游的差异及**改动原因**：
+
+| 项目 | 上游 | 本分支 | 为什么 |
+|---|---|---|---|
+| 下载测速默认地址 | `https://cf.xiu2.xyz/url`（公益重定向链接） | `https://speed.cloudflare.com/__down?bytes=524288000`（500MiB） | 上游公益链接依赖第三方维护、可用性不稳定；直接指向 Cloudflare 官方测速接口，减少对第三方公益服务的依赖，500MiB 也足够跑到 `-dt` 超时。 |
+| 下载请求头 | 无 | 默认带 `Referer: https://speed.cloudflare.com`（该地址超过 10MB 时不带会 403） | `speed.cloudflare.com/__down` 对大于 10MB 的请求会校验 Referer，不带上会直接返回 403，导致下载测速全部 0.00。 |
+| HTTPing 延迟测速地址 | 与 `-url` 共用 | 独立参数 `-httping-url`，默认 `https://cp.cloudflare.com/`（避免每次延迟测速都去请求 speed 的大文件接口） | HTTPing 只需要响应头，没必要每次都请求 `-url` 指向的大文件接口；拆开后可单独指定轻量地址，降低被限流的概率。 |
+| HTTPing 默认有效状态码 | 200 / 301 / 302 | 200 / **204** / 301 / 302（`cp.cloudflare.com` 的 HEAD 返回 204） | 默认 HTTPing 地址 `cp.cloudflare.com` 的 HEAD 请求返回 204，若不把 204 视为有效会导致所有 IP 都测不出结果。 |
+| 配置文件 | 无 | `-config` 支持 JSON 配置文件，命令行显式参数优先于配置文件 | 免去在 cron/脚本里拼一长串参数；同时保留命令行覆盖能力，便于临时改单个参数。 |
+| 启动输出 | 直接开始测速 | 先打印一段**生效配置**（token 打码） | 参数一多就难以确认「到底跑的哪套」，先打印合并后的最终配置便于事后核对，token 打码避免密钥泄漏到日志。 |
+| 参数校验 | 基本不校验 | 非法取值带**中文原因非 0 退出** | 非法参数（如端口越界、DNS 格式错误）静默失败会让人误以为程序在正常跑，非 0 退出也方便脚本/cron 感知失败。 |
+| 测速后动作 | 只输出结果 | 可选：把最快的 N 个 IP 自动写入 Cloudflare 托管的 DNS（`-cf-*`） | 测速完还要手动把 IP 填进 DNS 很麻烦；接线后可由一次命令完成「测速 → 更新记录」，适合 cron 定期刷新。 |
+| 域名解析 | 用系统解析器 | 可用 `-dns` 指定解析器（只影响本工具自己发起的请求，主要是 Cloudflare API） | 部分环境系统解析器不可用或被污染，指定 `-dns` 后仍能访问 Cloudflare API。 |
+
+> **注意**：**测速阶段不依赖 DNS**——它按 `ip.txt`（或 `-ip`）里的 IP 直连测速，因此 `-dns` 只影响 Cloudflare API 那一步（以及本工具自身发起的其他域名解析）。
+
+### 新增/变更的命令行参数
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `-referer` | `https://speed.cloudflare.com` | 下载测速请求的 `Referer`；空字符串 = 不发送。 |
+| `-httping-url` | `https://cp.cloudflare.com/` | HTTPing 延迟测速地址；为空时回退到 `-url`。 |
+| `-dns` | 空（系统解析器） | 本工具自身解析域名用的 DNS 服务器；支持 `1.1.1.1`、`1.1.1.1:53`、裸 IPv6、`[IPv6]:port` 等形式。 |
+| `-config` | 空 | JSON 配置文件路径；命令行显式给出的参数优先于配置文件。 |
+| `-cf-zone` | 空 | Cloudflare Zone；可填根域名（自动查 Zone ID）或 32 位 Zone ID。 |
+| `-cf-record` | 空 | 要更新的记录名；必须是完整域名（写 `@` 或等于 zone 表示根记录）。 |
+| `-cf-token` | 空 | Cloudflare API Token（需要 `Zone:Read` + `DNS:Edit` 权限）；为空时读环境变量 `CF_API_TOKEN`。 |
+| `-cf-count` | `1` | 写入 DNS 的最优 IP 条数；同名同类型最多保留这么多条。 |
+| `-cf-ttl` | `60` | DNS 记录 TTL 秒，`1` 表示 Cloudflare 的 auto。 |
+| `-cf-proxied` | `false` | 是否给这些记录开启 Cloudflare 代理；**优选 IP 场景必须保持 `false`**。 |
+
+> **`-cf-zone` / `-cf-record` / `-cf-token` 三者齐备才启用** DNS 自动更新；只给了一部分会报错退出。其中 token 也可以用环境变量 `CF_API_TOKEN` 提供。
+
+### 配置文件
+
+仓库根目录提供了示例配置 [`cfst.example.json`](cfst.example.json)，可直接复制后修改。字段说明如下（表中「默认」指不写该字段时程序实际使用的值）：
+
+| 字段名 | 类型 | 默认 | 含义 |
+|---|---|---|---|
+| `url` | string | `https://speed.cloudflare.com/__down?bytes=524288000` | 下载测速地址（等价 `-url`）。 |
+| `referer` | string | `https://speed.cloudflare.com` | 下载测速请求的 `Referer`（等价 `-referer`）。 |
+| `httping_url` | string | `https://cp.cloudflare.com/` | HTTPing 延迟测速地址（等价 `-httping-url`）。 |
+| `routines` | int | `200` | 延迟测速线程数（等价 `-n`）。 |
+| `ping_times` | int | `4` | 单个 IP 延迟测速次数（等价 `-t`）。 |
+| `test_count` | int | `10` | 下载测速数量（等价 `-dn`）。 |
+| `download_time` | int | `10` | 单个 IP 下载测速最长时间，秒（等价 `-dt`）。 |
+| `tcp_port` | int | `443` | 测速端口（等价 `-tp`）。 |
+| `httping` | bool | `false` | 是否切换为 HTTPing 延迟测速模式（等价 `-httping`）。 |
+| `httping_code` | int | `0`（表示用内置的 200/204/301/302） | HTTPing 有效状态码，仅限一个（等价 `-httping-code`）。 |
+| `cfcolo` | string | `""` | 匹配指定地区，逗号分隔，仅 HTTPing 模式可用（等价 `-cfcolo`）。 |
+| `max_delay` | int | `9999` | 平均延迟上限，ms（等价 `-tl`）。 |
+| `min_delay` | int | `0` | 平均延迟下限，ms（等价 `-tll`）。 |
+| `max_loss_rate` | float | `1` | 丢包几率上限，范围 0.00~1.00（等价 `-tlr`）。 |
+| `min_speed` | float | `0` | 下载速度下限，MB/s（等价 `-sl`）。 |
+| `print_num` | int | `10` | 显示结果数量，`0` 表示不显示（等价 `-p`）。 |
+| `ip_file` | string | `ip.txt` | IP 段数据文件（等价 `-f`）。 |
+| `ip_text` | string | `""` | 直接指定的 IP 段数据，逗号分隔（等价 `-ip`）。 |
+| `output` | string | `result.csv` | 结果输出文件，空字符串表示不写文件（等价 `-o`）。 |
+| `disable_download` | bool | `false` | 是否禁用下载测速（等价 `-dd`）。 |
+| `test_all` | bool | `false` | 是否对 IP 段中每个 IP 测速（等价 `-allip`）。 |
+| `debug` | bool | `false` | 调试输出模式（等价 `-debug`）。 |
+| `dns` | string | `""` | 本工具自身解析域名用的 DNS 服务器（等价 `-dns`）。 |
+| `cloudflare.zone` | string | `""` | Cloudflare Zone（等价 `-cf-zone`）。 |
+| `cloudflare.record` | string | `""` | 要更新的记录名（等价 `-cf-record`）。 |
+| `cloudflare.token` | string | `""` | Cloudflare API Token（等价 `-cf-token`）。 |
+| `cloudflare.count` | int | `1` | 写入 DNS 的最优 IP 条数（等价 `-cf-count`）。 |
+| `cloudflare.ttl` | int | `60` | DNS 记录 TTL 秒，`1` 表示 auto（等价 `-cf-ttl`）。 |
+| `cloudflare.proxied` | bool | `false` | 是否为记录开启 Cloudflare 代理（等价 `-cf-proxied`）。 |
+
+两条规则：
+
+1. 配置文件里**没写的字段走默认值**（上表「默认」列）。
+2. **命令行显式给出的参数优先于配置文件**；程序用 `flag.Visit` 区分「没写」与「显式写了零值」，因此显式写 `-dns ""` 也能压过配置文件里的 `dns` 值。
+
+> **注意**：示例配置里的 `cloudflare.zone` / `cloudflare.record` 是**占位符**、`token` 留空，三者不齐备，所以**不能直接原样运行**（会因缺少 token 而报错退出）。纯测速时请用显式空值把它们压掉，或填好 token 后再用。
+
+### 用法示例
+
+1）纯测速（不需要 token）：
+
+```bash
+# 纯命令行，不读取配置文件，也不涉及 Cloudflare DNS
+./cfst -httping -dn 20
+
+# 若要复用示例配置，示例里的 cloudflare.zone/record 是占位符，
+# 需用命令行显式空值把它们压掉（命令行优先于配置文件）
+./cfst -config cfst.example.json -cf-zone "" -cf-record ""
+```
+
+2）测速 + 自动更新 DNS（含 `CF_API_TOKEN` 环境变量的写法）：
+
+```bash
+# 先把示例配置复制一份，填好 zone/record，token 用环境变量提供
+cp cfst.example.json cfst.json
+# 编辑 cfst.json：把 cloudflare.zone 改成你的根域名、cloudflare.record 改成要更新的记录名
+export CF_API_TOKEN="你的 Cloudflare API Token"
+./cfst -config cfst.json
+
+# 也可以完全用命令行指定（zone/record/token 三者齐备才启用）
+./cfst -cf-zone example.com -cf-record cf.example.com -cf-token "$CF_API_TOKEN" -cf-count 1 -cf-ttl 60
+```
+
+> cron 示例（**注意：本机时区是 UTC**；要按北京时间跑需要设置 `CRON_TZ=Asia/Shanghai`）：
+
+```cron
+# 每天北京时间 04:30 刷新一次 DNS（CRON_TZ 只影响这一条 cron 的时区）
+CRON_TZ=Asia/Shanghai
+30 4 * * * cd /path/to/cfst && CF_API_TOKEN=xxxx ./cfst -config cfst.json >/dev/null 2>&1
+```
+
+### 已知差异（提醒）
+
+- `-v` 的版本检查仍指向上游的 `api.xiu2.xyz`，而本分支版本号带 `-asher.N` 后缀，因此**会提示「发现新版本」**，属正常现象，可忽略。
+- 本分支不再提供上游 release 里的 `_old` 资产（给 macOS 10.13/10.14、Win7/8 用的旧 Go 构建）。
+- 上游文档正文里出现的默认测速地址 `https://cf.xiu2.xyz/url` 指的是**上游**的行为；本分支已改为 `https://speed.cloudflare.com/__down?bytes=524288000`。
+
+### 构建与发布
+
+打 tag 即触发 GitHub Actions 自动编译并创建 Release（工作流见 [`.github/workflows/release.yml`](.github/workflows/release.yml)）：
+
+```bash
+git tag -a v2.3.5-asher.4 -m "v2.3.5-asher.4" && git push origin v2.3.5-asher.4
+```
+
+本地手动构建（照上游的写法，通过 `-ldflags` 注入版本号）：
+
+```bash
+go build -ldflags "-s -w -X main.version=v2.3.5-asher.4" -o cfst
+```
+
+许可证不变：**GPL-3.0**。
+
+****
 ## \# 快速使用
 
 ### 下载运行
@@ -559,6 +704,8 @@ cfst -url https://cf.xiu2.xyz/url
 # 注意：如果测速地址为 HTTP 协议（该地址不能强制重定向至 HTTPS），记得加上 -tp 80（这个参数会影响 延迟测速/下载测速 时使用的端口），如果是非 80 443 端口，那么需要确定下载测速地址是否支持通过该端口访问。
 cfst -tp 80 -url http://speed.cloudflare.com/__down?bytes=99999999
 ```
+
+> **注意**：上面示例里的 `https://cf.xiu2.xyz/url` 是**上游**的默认测速地址；本分支（swysgh fork）已把默认值改为 `https://speed.cloudflare.com/__down?bytes=524288000`，详见上文「本分支（swysgh fork）的改动」。
 
 </details>
 

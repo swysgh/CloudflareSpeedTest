@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # 手动触发：workflow_dispatch 时 github.ref_name 是分支名（不是 tag 名），
+  # 版本号会取该分支名；如需正式发版请用打 tag 的方式触发。
+  workflow_dispatch:
+
+# 创建 Release 需要写权限
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: 运行测试
+        run: go test ./...
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: 交叉编译并打包
+        env:
+          # 版本号取 tag 名，通过 -ldflags 注入
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist
+
+          # 交叉编译矩阵：goos:goarch:goarm:归档架构名:扩展名
+          # armv5/6/7 的 GOARCH 都是 arm，只是 GOARM 不同；
+          # 归档名与上游 release 保持一致（cfst_<os>_<arch>.<ext>），不生成 _old 变体。
+          targets=(
+            "linux:386::386:tar.gz"
+            "linux:amd64::amd64:tar.gz"
+            "linux:arm64::arm64:tar.gz"
+            "linux:arm:5:armv5:tar.gz"
+            "linux:arm:6:armv6:tar.gz"
+            "linux:arm:7:armv7:tar.gz"
+            "linux:mips::mips:tar.gz"
+            "linux:mips64::mips64:tar.gz"
+            "linux:mips64le::mips64le:tar.gz"
+            "linux:mipsle::mipsle:tar.gz"
+            "windows:386::386:zip"
+            "windows:amd64::amd64:zip"
+            "windows:arm64::arm64:zip"
+            "darwin:amd64::amd64:zip"
+            "darwin:arm64::arm64:zip"
+          )
+
+          for t in "${targets[@]}"; do
+            IFS=':' read -r goos goarch goarm arch ext <<< "$t"
+            name="cfst_${goos}_${arch}"
+            stage="dist/${name}"
+            mkdir -p "$stage"
+
+            bin="cfst"
+            if [ "$goos" = "windows" ]; then
+              bin="cfst.exe"
+            fi
+
+            echo "==> ${name} (GOOS=${goos} GOARCH=${goarch} GOARM=${goarm})"
+            GOOS="$goos" GOARCH="$goarch" GOARM="$goarm" \
+              go build -buildvcs=false -ldflags "-s -w -X main.version=${VERSION}" -o "$stage/$bin" .
+
+            # 每个归档里放：二进制 + ip.txt + ipv6.txt + cfst.example.json
+            cp ip.txt ipv6.txt cfst.example.json "$stage/"
+
+            if [ "$ext" = "zip" ]; then
+              ( cd "$stage" && zip -q -j "../${name}.zip" "$bin" ip.txt ipv6.txt cfst.example.json )
+            else
+              tar -czf "dist/${name}.tar.gz" -C "$stage" "$bin" ip.txt ipv6.txt cfst.example.json
+            fi
+          done
+
+          # 所有归档的 sha256
+          ( cd dist && sha256sum *.tar.gz *.zip > checksums.txt )
+
+          echo "==> 产物列表"
+          ls -la dist
+
+      - name: 创建 Release 并上传资产
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          NOTES="本分支（swysgh fork）的改动见 README 的『本分支（swysgh fork）的改动』一节。"
+          # 重跑时 release 可能已存在，存在就只补传资产
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release upload "$VERSION" dist/*.tar.gz dist/*.zip dist/checksums.txt --clobber
+          else
+            gh release create "$VERSION" dist/*.tar.gz dist/*.zip dist/checksums.txt \
+              --title "$VERSION" \
+              --notes "$NOTES"
+          fi

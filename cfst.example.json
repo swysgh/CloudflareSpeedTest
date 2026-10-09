@@ -30,5 +30,6 @@
     "count": 1,
     "ttl": 1,
     "proxied": false
-  }
+  },
+  "hosts": { "domain": "cfip", "file": "/etc/hosts", "count": 1 }
 }

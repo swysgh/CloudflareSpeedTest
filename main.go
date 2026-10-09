@@ -92,6 +92,13 @@ https://github.com/XIU2/CloudflareSpeedTest
         是否给这些记录开启 Cloudflare 代理；优选 IP 场景必须保持关闭；(默认 关闭)
         以上三项（zone/record/token）全部提供时才启用 DNS 自动更新；只给了一部分会报错退出。
 
+    -hosts-domain cfip
+        要写入 hosts 的域名/主机名（如 cfip）；留空则不启用 hosts 更新
+    -hosts-file /etc/hosts
+        hosts 文件路径（默认 /etc/hosts）
+    -hosts-count 1
+        每个地址族最多写入几个 IP（默认 1）
+
     -dd
         禁用下载测速；禁用后测速结果会按延迟排序 (默认按下载速度排序)；(默认 启用)
     -allip
@@ -146,6 +153,10 @@ https://github.com/XIU2/CloudflareSpeedTest
 	flag.IntVar(&cfOpts.ttl, "cf-ttl", 60, "DNS 记录 TTL 秒（1=自动）")
 	flag.BoolVar(&cfOpts.proxied, "cf-proxied", false, "DNS 记录是否开启 Cloudflare 代理（优选 IP 场景必须为 false）")
 
+	flag.StringVar(&hostsOpts.domain, "hosts-domain", "", "要写入 hosts 的域名/主机名（如 cfip）；留空则不启用 hosts 更新")
+	flag.StringVar(&hostsOpts.file, "hosts-file", "/etc/hosts", "hosts 文件路径（默认 /etc/hosts）")
+	flag.IntVar(&hostsOpts.count, "hosts-count", 1, "每个地址族最多写入几个 IP（默认 1）")
+
 	flag.BoolVar(&printVersion, "v", false, "打印程序版本")
 	flag.Usage = func() { fmt.Print(help) }
 	flag.Parse()
@@ -189,6 +200,7 @@ func main() {
 	utils.ExportCsv(speedData) // 输出文件
 	speedData.Print()          // 打印结果
 	updateDNS(speedData)       // 把最优 IP 同步到 Cloudflare DNS（未启用时直接返回）
+	updateHosts(speedData)     // 把最优 IP 写入 hosts（未启用时直接返回）
 	endPrint()                 // 根据情况选择退出方式（针对 Windows）
 }
 

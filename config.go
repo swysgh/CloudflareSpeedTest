@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/XIU2/CloudflareSpeedTest/cfdns"
+	"github.com/XIU2/CloudflareSpeedTest/cfhosts"
 	"github.com/XIU2/CloudflareSpeedTest/task"
 	"github.com/XIU2/CloudflareSpeedTest/utils"
 )
@@ -29,6 +30,15 @@ type cfOptions struct {
 
 var cfOpts cfOptions
 
+// hostsOptions 是「测速完成后自动更新 hosts」的一组参数，命令行 flag 与配置文件共用
+type hostsOptions struct {
+	domain string
+	file   string
+	count  int
+}
+
+var hostsOpts = hostsOptions{file: "/etc/hosts", count: 1}
+
 // configPath 是 -config 指定的 JSON 配置文件路径
 var configPath string
 
@@ -40,6 +50,13 @@ var resolver *net.Resolver
 
 // resolverAddr 是归一化后的拨号地址（host:port），仅在 resolver 非 nil 时有意义，用于打印生效配置
 var resolverAddr string
+
+// hostsConfig 是配置文件里的 hosts 段，字段一律用指针以区分「没写」与「显式零值」
+type hostsConfig struct {
+	Domain *string `json:"domain"`
+	File   *string `json:"file"`
+	Count  *int    `json:"count"`
+}
 
 // fileConfig 是 -config 指向的 JSON 配置文件结构，所有字段都可选。
 // 字段一律用指针：只有指针才能区分「没写」与「显式写了零值」，而 flag 优先级判断正依赖这个区分。
@@ -76,6 +93,7 @@ type fileConfig struct {
 		TTL     *int    `json:"ttl"`
 		Proxied *bool   `json:"proxied"`
 	} `json:"cloudflare"`
+	Hosts *hostsConfig `json:"hosts"`
 }
 
 // fatal 打印带中文原因的 [错误] 并以非 0 退出 —— 静默退出会让人以为程序在正常跑
@@ -197,6 +215,18 @@ func applyConfigFile(path string) {
 			cfOpts.proxied = *fc.Cloudflare.Proxied
 		}
 	}
+
+	if fc.Hosts != nil {
+		if !set["hosts-domain"] && fc.Hosts.Domain != nil {
+			hostsOpts.domain = *fc.Hosts.Domain
+		}
+		if !set["hosts-file"] && fc.Hosts.File != nil {
+			hostsOpts.file = *fc.Hosts.File
+		}
+		if !set["hosts-count"] && fc.Hosts.Count != nil {
+			hostsOpts.count = *fc.Hosts.Count
+		}
+	}
 }
 
 // normalizeDNSServer 把 -dns 的取值归一化成 host:port 形式的拨号地址；空值返回空串。
@@ -305,6 +335,16 @@ func validateOptions() {
 	}
 	if task.TCPPort < 1 || task.TCPPort > 65535 {
 		fatal("-tp 必须在 1..65535 之间，当前: %d", task.TCPPort)
+	}
+
+	// hosts 更新：指定了域名才校验，未启用时不干预
+	if hostsOpts.domain != "" {
+		if hostsOpts.file == "" {
+			fatal("-hosts-file 不能为空")
+		}
+		if hostsOpts.count < 1 {
+			fatal("-hosts-count 必须 >= 1，当前: %d", hostsOpts.count)
+		}
 	}
 
 	// token 允许走环境变量，方便 cron 里不把密钥写进配置文件
@@ -422,6 +462,11 @@ func printEffectiveConfig() {
 	} else {
 		fmt.Println("[配置] Cloudflare DNS: 未启用")
 	}
+	if hostsEnabled() {
+		fmt.Printf("[配置] Hosts 更新: 启用 (domain=%s, file=%s, count=%d)\n", hostsOpts.domain, hostsOpts.file, hostsOpts.count)
+	} else {
+		fmt.Println("[配置] Hosts 更新: 未启用")
+	}
 }
 
 // updateDNS 把测速结果里最快的若干个 IP 同步到 Cloudflare DNS。
@@ -461,4 +506,37 @@ func updateDNS(speedData utils.DownloadSpeedSet) {
 	}
 	utils.Cyan.Printf("[信息] Cloudflare DNS 更新完成：创建 %d 条，更新 %d 条，删除 %d 条。\n",
 		result.Created, result.Updated, result.Deleted)
+}
+
+// hostsEnabled 只要指定了域名就启用 hosts 更新（文件与数量都有默认值）
+func hostsEnabled() bool {
+	return hostsOpts.domain != ""
+}
+
+// updateHosts 把测速结果里最快的若干个 IP 写入 hosts 文件，让 hostsOpts.domain 固定解析到优选 IP。
+// 与 updateDNS 并列且互不影响：CF 关闭时 hosts 仍会执行，反之亦然。
+func updateHosts(speedData utils.DownloadSpeedSet) {
+	if !hostsEnabled() {
+		return
+	}
+	limit := hostsOpts.count * 2
+	if limit > len(speedData) {
+		limit = len(speedData)
+	}
+	ips := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		ips = append(ips, speedData[i].IP.String())
+	}
+	if len(ips) == 0 {
+		utils.Yellow.Println("[警告] hosts 更新跳过：没有可用 IP。")
+		return
+	}
+	if _, err := cfhosts.Update(ips, cfhosts.Config{
+		Domain: hostsOpts.domain,
+		File:   hostsOpts.file,
+		Count:  hostsOpts.count,
+	}); err != nil {
+		utils.Red.Printf("[错误] hosts 更新失败: %v\n", err)
+		os.Exit(1) // 非 0 退出，便于 cron 告警
+	}
 }

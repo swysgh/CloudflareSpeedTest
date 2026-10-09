@@ -45,6 +45,7 @@ git fetch upstream && git merge upstream/master
 | 启动输出 | 直接开始测速 | 先打印一段**生效配置**（token 打码） | 参数一多就难以确认「到底跑的哪套」，先打印合并后的最终配置便于事后核对，token 打码避免密钥泄漏到日志。 |
 | 参数校验 | 基本不校验 | 非法取值带**中文原因非 0 退出** | 非法参数（如端口越界、DNS 格式错误）静默失败会让人误以为程序在正常跑，非 0 退出也方便脚本/cron 感知失败。 |
 | 测速后动作 | 只输出结果 | 可选：把最快的 N 个 IP 自动写入 Cloudflare 托管的 DNS（`-cf-*`） | 测速完还要手动把 IP 填进 DNS 很麻烦；接线后可由一次命令完成「测速 → 更新记录」，适合 cron 定期刷新。 |
+| 测速后动作（hosts） | 需外部脚本 `cfst_hosts.sh` + `sed -i` 替换 IP | 内建 `-hosts-*`，按域名精确替换写入 hosts | 上游脚本要先手工把所有 CF IP 统一成一个已知 IP，且按 IP 字符串替换容易误伤无关文本；内建后按域名精确匹配、无需外部脚本，并用临时文件原子替换。 |
 | 域名解析 | 用系统解析器 | 可用 `-dns` 指定解析器（只影响本工具自己发起的请求，主要是 Cloudflare API） | 部分环境系统解析器不可用或被污染，指定 `-dns` 后仍能访问 Cloudflare API。 |
 | 日志输出 | 始终输出进度条 | 可用 `-systemd` 关闭进度条 | 进度条靠 `\r` 重绘，在 systemd/journald、cron 或重定向到文件时会在日志里留下大量无效行；这些环境需要干净的纯文本日志。 |
 
@@ -65,6 +66,9 @@ git fetch upstream && git merge upstream/master
 | `-cf-count` | `1` | 写入 DNS 的最优 IP 条数；同名同类型最多保留这么多条。 |
 | `-cf-ttl` | `60` | DNS 记录 TTL 秒，`1` 表示 Cloudflare 的 auto。 |
 | `-cf-proxied` | `false` | 是否给这些记录开启 Cloudflare 代理；**优选 IP 场景必须保持 `false`**。 |
+| `-hosts-domain` | 空 | 要写入 hosts 的域名/主机名（如 `cfip`）；留空则不启用 hosts 更新。 |
+| `-hosts-file` | `/etc/hosts` | hosts 文件路径。 |
+| `-hosts-count` | `1` | 每个地址族最多写入几个 IP。 |
 
 > **`-cf-zone` / `-cf-record` / `-cf-token` 三者齐备才启用** DNS 自动更新；只给了一部分会报错退出。其中 token 也可以用环境变量 `CF_API_TOKEN` 提供。
 
@@ -104,6 +108,9 @@ git fetch upstream && git merge upstream/master
 | `cloudflare.count` | int | `1` | 写入 DNS 的最优 IP 条数（等价 `-cf-count`）。 |
 | `cloudflare.ttl` | int | `60` | DNS 记录 TTL 秒，`1` 表示 auto（等价 `-cf-ttl`）。 |
 | `cloudflare.proxied` | bool | `false` | 是否为记录开启 Cloudflare 代理（等价 `-cf-proxied`）。 |
+| `hosts.domain` | string | `""` | 要写入 hosts 的域名/主机名（等价 `-hosts-domain`）。 |
+| `hosts.file` | string | `/etc/hosts` | hosts 文件路径（等价 `-hosts-file`）。 |
+| `hosts.count` | int | `1` | 每个地址族最多写入几个 IP（等价 `-hosts-count`）。 |
 
 两条规则：
 
@@ -973,6 +980,43 @@ cfst -f 1.txt
 可以看这个 [**Issues**](https://github.com/XIU2/CloudflareSpeedTest/discussions/312) 获取 **Windows/Linux 自动更新 Hosts 脚本**！
 
 ****
+
+#### \# 自动更新 hosts（-hosts-*）
+
+除了更新 Cloudflare DNS，本分支还可以在测速结束后把最优 IP 写进本机 hosts 文件，让某个域名（如 `cfip`）固定解析到优选 IP：
+
+```bash
+# 把最优 IP 写入 hosts，域名 cfip 每个地址族各写 1 个 IP（写 /etc/hosts 需要 root 权限）
+sudo ./cfst -hosts-domain cfip
+
+# 指定其它 hosts 文件与每族 IP 数量
+./cfst -hosts-domain cfip -hosts-file /etc/hosts -hosts-count 2
+```
+
+写入的内容固定为一个带标记的托管块（IP 与主机名之间是**两个空格**），放在文件末尾：
+
+```
+# cfst begin (auto-generated, do not edit)
+104.17.57.133  cfip
+2606:4700::1  cfip
+# cfst end
+```
+
+- 每次更新都会先删掉所有映射了该域名的旧行，以及上一次写入的托管块（即使域名已经改了、残留的旧块也会被清掉），再在末尾追加新块。
+- 如果被删的某一行上还有别的主机名（如 `1.1.1.1 cfip other.example`），该行会被保留、只把 IP 换成新的并去掉 `cfip`，避免误删别的映射（日志里会打印警告）。
+- **幂等**：若生成的内容与文件现有内容完全一致，则不写文件、保持 mtime 不变，只打印「hosts 已是最新，跳过更新」。
+- **原子写入**：先在同一目录创建临时文件，写完并同步权限/属主后再 `rename` 覆盖，避免写到一半失败留下半截 hosts。
+
+比上游 `cfst_hosts.sh` 好在哪：
+
+| 对比项 | 上游 `cfst_hosts.sh` | 本分支 `-hosts-*` |
+|---|---|---|
+| 匹配方式 | 按 IP 字符串 `sed -i 's/旧IP/新IP/g'` | 按**域名精确匹配**（`cfip` 不会命中 `cfip2` / `my-cfip`） |
+| 使用前提 | 需先把 hosts 里所有 CF IP 手工统一成一个已知 IP | 无需预处理，直接跑 |
+| 依赖 | 外部脚本 | 内建进程序，无外部依赖 |
+| 写入方式 | `sed -i` | 临时文件 + `rename` **原子替换**，并保留权限/属主 |
+
+> 注意：写 `/etc/hosts` 通常需要 root 权限；只读文件会明确报「无写权限」并以非 0 退出。`-hosts-domain` 留空则不启用该功能。
 
 ## 问题反馈
 

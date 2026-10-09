@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/XIU2/CloudflareSpeedTest/utils"
 )
@@ -192,12 +191,8 @@ func atomicWrite(path string, content []byte, info os.FileInfo) error {
 		return fmt.Errorf("设置临时文件权限失败: %w", err)
 	}
 	// 属主同步只在 root 下做：非 root 通常无权 Chown，直接跳过即可
-	if os.Geteuid() == 0 {
-		if st, ok := info.Sys().(*syscall.Stat_t); ok {
-			if err := os.Chown(tmpName, int(st.Uid), int(st.Gid)); err != nil {
-				return fmt.Errorf("设置临时文件属主失败: %w", err)
-			}
-		}
+	if err := chownLike(tmpName, info); err != nil {
+		return fmt.Errorf("设置临时文件属主失败: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("替换 hosts 文件失败: %w", err)

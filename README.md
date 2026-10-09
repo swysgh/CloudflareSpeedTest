@@ -46,6 +46,7 @@ git fetch upstream && git merge upstream/master
 | 参数校验 | 基本不校验 | 非法取值带**中文原因非 0 退出** | 非法参数（如端口越界、DNS 格式错误）静默失败会让人误以为程序在正常跑，非 0 退出也方便脚本/cron 感知失败。 |
 | 测速后动作 | 只输出结果 | 可选：把最快的 N 个 IP 自动写入 Cloudflare 托管的 DNS（`-cf-*`） | 测速完还要手动把 IP 填进 DNS 很麻烦；接线后可由一次命令完成「测速 → 更新记录」，适合 cron 定期刷新。 |
 | 域名解析 | 用系统解析器 | 可用 `-dns` 指定解析器（只影响本工具自己发起的请求，主要是 Cloudflare API） | 部分环境系统解析器不可用或被污染，指定 `-dns` 后仍能访问 Cloudflare API。 |
+| 日志输出 | 始终输出进度条 | 可用 `-systemd` 关闭进度条 | 进度条靠 `\r` 重绘，在 systemd/journald、cron 或重定向到文件时会在日志里留下大量无效行；这些环境需要干净的纯文本日志。 |
 
 > **注意**：**测速阶段不依赖 DNS**——它按 `ip.txt`（或 `-ip`）里的 IP 直连测速，因此 `-dns` 只影响 Cloudflare API 那一步（以及本工具自身发起的其他域名解析）。
 
@@ -57,6 +58,7 @@ git fetch upstream && git merge upstream/master
 | `-httping-url` | `https://cp.cloudflare.com/` | HTTPing 延迟测速地址；为空时回退到 `-url`。 |
 | `-dns` | 空（系统解析器） | 本工具自身解析域名用的 DNS 服务器；支持 `1.1.1.1`、`1.1.1.1:53`、裸 IPv6、`[IPv6]:port` 等形式。 |
 | `-config` | 空 | JSON 配置文件路径；命令行显式给出的参数优先于配置文件。 |
+| `-systemd` | `false` | 适合在 systemd / cron 等非交互环境运行；不输出进度条。 |
 | `-cf-zone` | 空 | Cloudflare Zone；可填根域名（自动查 Zone ID）或 32 位 Zone ID。 |
 | `-cf-record` | 空 | 要更新的记录名；必须是完整域名（写 `@` 或等于 zone 表示根记录）。 |
 | `-cf-token` | 空 | Cloudflare API Token（需要 `Zone:Read` + `DNS:Edit` 权限）；为空时读环境变量 `CF_API_TOKEN`。 |
@@ -94,6 +96,7 @@ git fetch upstream && git merge upstream/master
 | `disable_download` | bool | `false` | 是否禁用下载测速（等价 `-dd`）。 |
 | `test_all` | bool | `false` | 是否对 IP 段中每个 IP 测速（等价 `-allip`）。 |
 | `debug` | bool | `false` | 调试输出模式（等价 `-debug`）。 |
+| `systemd` | bool | `false` | 是否关闭进度条（等价 `-systemd`）。 |
 | `dns` | string | `""` | 本工具自身解析域名用的 DNS 服务器（等价 `-dns`）。 |
 | `cloudflare.zone` | string | `""` | Cloudflare Zone（等价 `-cf-zone`）。 |
 | `cloudflare.record` | string | `""` | 要更新的记录名（等价 `-cf-record`）。 |

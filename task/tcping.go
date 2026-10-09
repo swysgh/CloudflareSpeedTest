@@ -75,6 +75,9 @@ func (p *Ping) Run() utils.PingDelaySet {
 	}
 	p.wg.Wait()
 	p.bar.Done()
+	if utils.NoProgress {
+		utils.Cyan.Printf("延迟测速完成，可用 IP: %d 个\n", len(p.csv))
+	}
 	sort.Sort(p.csv)
 	return p.csv
 }

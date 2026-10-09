@@ -100,6 +100,9 @@ https://github.com/XIU2/CloudflareSpeedTest
     -debug
         调试输出模式；会在一些非预期情况下输出更多日志以便判断原因；(默认 关闭)
 
+    -systemd
+        适合在 systemd / cron 等非交互环境运行；不输出进度条（进度条靠 \r 重绘，写进日志会变成大量无效行）；(默认 关闭)
+
     -v
         打印程序版本 + 检查版本更新
     -h
@@ -132,6 +135,7 @@ https://github.com/XIU2/CloudflareSpeedTest
 	flag.BoolVar(&task.TestAll, "allip", false, "测速全部 IP")
 
 	flag.BoolVar(&utils.Debug, "debug", false, "调试输出模式")
+	flag.BoolVar(&utils.NoProgress, "systemd", false, "适合在 systemd / cron 等非交互环境运行；不输出进度条")
 
 	flag.StringVar(&dnsServer, "dns", "", "本工具自身解析域名用的 DNS 服务器；为空=系统解析器")
 	flag.StringVar(&configPath, "config", "", "JSON 配置文件路径；命令行显式给出的参数优先于配置文件")

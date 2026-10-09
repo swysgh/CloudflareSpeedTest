@@ -66,6 +66,7 @@ type fileConfig struct {
 	DisableDownload *bool    `json:"disable_download"`
 	TestAll         *bool    `json:"test_all"`
 	Debug           *bool    `json:"debug"`
+	Systemd         *bool    `json:"systemd"`
 	DNS             *string  `json:"dns"`
 	Cloudflare      *struct {
 		Zone    *string `json:"zone"`
@@ -168,6 +169,9 @@ func applyConfigFile(path string) {
 	}
 	if !set["debug"] && fc.Debug != nil {
 		utils.Debug = *fc.Debug
+	}
+	if !set["systemd"] && fc.Systemd != nil {
+		utils.NoProgress = *fc.Systemd
 	}
 	if !set["dns"] && fc.DNS != nil {
 		dnsServer = *fc.DNS
@@ -402,6 +406,11 @@ func printEffectiveConfig() {
 	fmt.Printf("[配置] 下载测速: 数量 %d / 时间 %ds / 下限 %.2f MB/s\n", task.TestCount, downloadTime, task.MinSpeed)
 	fmt.Printf("[配置] 延迟条件: %d ~ %d ms, 丢包上限 %.2f\n", minDelay, maxDelay, maxLossRate)
 	fmt.Printf("[配置] 显示数量/输出文件: %d / %s\n", utils.PrintNum, utils.Output)
+	if utils.NoProgress {
+		fmt.Println("[配置] 进度条: 关闭（systemd 模式）")
+	} else {
+		fmt.Println("[配置] 进度条: 开启")
+	}
 	if resolver == nil {
 		fmt.Println("[配置] DNS 解析器: 系统默认")
 	} else {

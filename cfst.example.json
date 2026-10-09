@@ -21,6 +21,7 @@
   "disable_download": false,
   "test_all": false,
   "debug": false,
+  "systemd": false,
   "dns": "",
   "cloudflare": {
     "zone": "example.com",
